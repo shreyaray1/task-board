@@ -28,12 +28,34 @@ const LABEL_COLORS = {
   Urgent: { bg: '#fff3e0', color: '#e65100' },
 }
 
+const MEMBER_COLORS = ['#6c63ff', '#e53935', '#2e7d32', '#1565c0', '#e65100', '#6a1b9a']
+
 function formatDate(dateStr) {
   const date = new Date(dateStr)
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-function TaskCard({ task, onDelete, onOpen }) {
+function Avatar({ member, size = 28 }) {
+  return (
+    <div style={{
+      width: size,
+      height: size,
+      borderRadius: '50%',
+      background: member.color,
+      color: 'white',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: size * 0.4,
+      fontWeight: 700,
+      flexShrink: 0,
+    }}>
+      {member.name.charAt(0).toUpperCase()}
+    </div>
+  )
+}
+
+function TaskCard({ task, onDelete, onOpen, teamMembers }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: task.id })
 
@@ -42,6 +64,8 @@ function TaskCard({ task, onDelete, onOpen }) {
     transition,
     opacity: isDragging ? 0.5 : 1,
   }
+
+  const assignee = teamMembers.find(m => m.id === task.assignee_id)
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}
@@ -63,6 +87,7 @@ function TaskCard({ task, onDelete, onOpen }) {
         {task.due_date && (
           <p className="due-date">Due: {task.due_date}</p>
         )}
+        {assignee && <Avatar member={assignee} />}
       </div>
       {task.labels && task.labels.length > 0 && (
         <div className="labels">
@@ -80,7 +105,7 @@ function TaskCard({ task, onDelete, onOpen }) {
   )
 }
 
-function Column({ column, tasks, onAddTask, onDelete, onOpen }) {
+function Column({ column, tasks, onAddTask, onDelete, onOpen, teamMembers }) {
   const { setNodeRef } = useDroppable({ id: column.id })
 
   return (
@@ -95,7 +120,7 @@ function Column({ column, tasks, onAddTask, onDelete, onOpen }) {
             <div className="empty-state">No tasks yet</div>
           )}
           {tasks.map(task => (
-            <TaskCard key={task.id} task={task} onDelete={onDelete} onOpen={onOpen} />
+            <TaskCard key={task.id} task={task} onDelete={onDelete} onOpen={onOpen} teamMembers={teamMembers} />
           ))}
         </div>
       </SortableContext>
@@ -106,7 +131,7 @@ function Column({ column, tasks, onAddTask, onDelete, onOpen }) {
   )
 }
 
-function TaskDetailPanel({ task, onClose, onDelete }) {
+function TaskDetailPanel({ task, onClose, onDelete, teamMembers }) {
   const [comments, setComments] = useState([])
   const [newComment, setNewComment] = useState('')
   const [loadingComments, setLoadingComments] = useState(true)
@@ -145,6 +170,7 @@ function TaskDetailPanel({ task, onClose, onDelete }) {
   }
 
   const columnLabel = COLUMNS.find(c => c.id === task.status)?.label
+  const assignee = teamMembers.find(m => m.id === task.assignee_id)
 
   return (
     <div className="detail-overlay" onClick={onClose}>
@@ -168,10 +194,16 @@ function TaskDetailPanel({ task, onClose, onDelete }) {
           {task.due_date && (
             <span className="due-date">Due: {task.due_date}</span>
           )}
+          {assignee && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Avatar member={assignee} />
+              <span style={{ fontSize: '13px', color: '#8b8fa8' }}>{assignee.name}</span>
+            </div>
+          )}
         </div>
 
         {task.labels && task.labels.length > 0 && (
-          <div className="labels" style={{ marginBottom: '20px' }}>
+          <div className="labels" style={{ marginBottom: '8px' }}>
             {task.labels.map(label => (
               <span key={label} className="label" style={{
                 background: LABEL_COLORS[label]?.bg || '#f0f1f5',
@@ -233,12 +265,16 @@ function TaskDetailPanel({ task, onClose, onDelete }) {
 
 function App() {
   const [tasks, setTasks] = useState([])
+  const [teamMembers, setTeamMembers] = useState([])
   const [loading, setLoading] = useState(true)
   const [activeTask, setActiveTask] = useState(null)
   const [showModal, setShowModal] = useState(false)
+  const [showTeamModal, setShowTeamModal] = useState(false)
   const [selectedTask, setSelectedTask] = useState(null)
-  const [newTask, setNewTask] = useState({ title: '', description: '', priority: 'normal', due_date: '', labels: [] })
+  const [newTask, setNewTask] = useState({ title: '', description: '', priority: 'normal', due_date: '', labels: [], assignee_id: '' })
   const [targetColumn, setTargetColumn] = useState('todo')
+  const [newMemberName, setNewMemberName] = useState('')
+  const [newMemberColor, setNewMemberColor] = useState(MEMBER_COLORS[0])
 
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 5 }
@@ -254,6 +290,7 @@ function App() {
       await supabase.auth.signInAnonymously()
     }
     fetchTasks()
+    fetchTeamMembers()
   }
 
   async function fetchTasks() {
@@ -264,6 +301,14 @@ function App() {
     if (error) console.error(error)
     else setTasks(data)
     setLoading(false)
+  }
+
+  async function fetchTeamMembers() {
+    const { data, error } = await supabase
+      .from('team_members')
+      .select('*')
+      .order('created_at', { ascending: true })
+    if (!error) setTeamMembers(data)
   }
 
   async function addTask() {
@@ -277,12 +322,33 @@ function App() {
       status: targetColumn,
       user_id: user.id,
       labels: newTask.labels,
+      assignee_id: newTask.assignee_id || null,
     }).select()
     if (!error) {
       setTasks(prev => [...prev, ...data])
-      setNewTask({ title: '', description: '', priority: 'normal', due_date: '', labels: [] })
+      setNewTask({ title: '', description: '', priority: 'normal', due_date: '', labels: [], assignee_id: '' })
       setShowModal(false)
     }
+  }
+
+  async function addTeamMember() {
+    if (!newMemberName.trim()) return
+    const { data: { user } } = await supabase.auth.getUser()
+    const { data, error } = await supabase.from('team_members').insert({
+      name: newMemberName,
+      color: newMemberColor,
+      user_id: user.id,
+    }).select()
+    if (!error) {
+      setTeamMembers(prev => [...prev, ...data])
+      setNewMemberName('')
+      setNewMemberColor(MEMBER_COLORS[0])
+    }
+  }
+
+  async function deleteTeamMember(memberId) {
+    setTeamMembers(prev => prev.filter(m => m.id !== memberId))
+    await supabase.from('team_members').delete().eq('id', memberId)
   }
 
   async function deleteTask(taskId) {
@@ -332,8 +398,22 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1>Task Board</h1>
-        <p className="subtitle">Manage your work visually</p>
+        <div className="header-left">
+          <h1>Task Board</h1>
+          <p className="subtitle">Manage your work visually</p>
+        </div>
+        <div className="header-right">
+          <div className="team-avatars">
+            {teamMembers.map(m => (
+              <div key={m.id} title={m.name} style={{ marginLeft: '-6px' }}>
+                <Avatar member={m} />
+              </div>
+            ))}
+          </div>
+          <button className="btn-team" onClick={() => setShowTeamModal(true)}>
+            Manage Team
+          </button>
+        </div>
       </header>
 
       <DndContext
@@ -351,12 +431,13 @@ function App() {
               onAddTask={openModal}
               onDelete={deleteTask}
               onOpen={setSelectedTask}
+              teamMembers={teamMembers}
             />
           ))}
         </div>
 
         <DragOverlay>
-          {activeTask && <TaskCard task={activeTask} onDelete={deleteTask} onOpen={() => {}} />}
+          {activeTask && <TaskCard task={activeTask} onDelete={deleteTask} onOpen={() => {}} teamMembers={teamMembers} />}
         </DragOverlay>
       </DndContext>
 
@@ -365,7 +446,52 @@ function App() {
           task={selectedTask}
           onClose={() => setSelectedTask(null)}
           onDelete={deleteTask}
+          teamMembers={teamMembers}
         />
+      )}
+
+      {showTeamModal && (
+        <div className="modal-overlay" onClick={() => setShowTeamModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h2>Manage Team</h2>
+            <div className="team-list">
+              {teamMembers.length === 0 && (
+                <p style={{ color: '#8b8fa8', fontSize: '13px' }}>No team members yet</p>
+              )}
+              {teamMembers.map(member => (
+                <div key={member.id} className="team-member-row">
+                  <Avatar member={member} />
+                  <span className="member-name">{member.name}</span>
+                  <button className="delete-btn" onClick={() => deleteTeamMember(member.id)}>×</button>
+                </div>
+              ))}
+            </div>
+            <div className="add-member-row">
+              <input
+                className="input"
+                placeholder="Member name"
+                value={newMemberName}
+                onChange={e => setNewMemberName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addTeamMember()}
+              />
+              <div className="color-options">
+                {MEMBER_COLORS.map(color => (
+                  <button
+                    key={color}
+                    className="color-btn"
+                    style={{
+                      background: color,
+                      border: newMemberColor === color ? '2px solid #1a1a2e' : '2px solid transparent'
+                    }}
+                    onClick={() => setNewMemberColor(color)}
+                  />
+                ))}
+              </div>
+              <button className="btn-add" onClick={addTeamMember}>Add</button>
+            </div>
+            <button className="btn-cancel" onClick={() => setShowTeamModal(false)}>Done</button>
+          </div>
+        </div>
       )}
 
       {showModal && (
@@ -399,6 +525,18 @@ function App() {
               value={newTask.due_date}
               onChange={e => setNewTask(prev => ({ ...prev, due_date: e.target.value }))}
             />
+            {teamMembers.length > 0 && (
+              <select
+                className="input"
+                value={newTask.assignee_id}
+                onChange={e => setNewTask(prev => ({ ...prev, assignee_id: e.target.value }))}
+              >
+                <option value="">No assignee</option>
+                {teamMembers.map(m => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
+            )}
             <div className="label-section">
               <p className="label-title">Labels</p>
               <div className="label-options">
